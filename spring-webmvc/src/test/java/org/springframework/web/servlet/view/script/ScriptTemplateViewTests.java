@@ -61,6 +61,10 @@ import static org.mockito.Mockito.mock;
 @DisabledForJreRange(min = JAVA_15) // Nashorn JavaScript engine removed in Java 15
 public class ScriptTemplateViewTests {
 
+	private static final String CLASSPATH_SCRIPT_LOCATION = "classpath:org/springframework/web/servlet/view/script/";
+
+	private static final String OUTSIDE_LOCATION = "classpath:org/springframework/web/servlet/view/testviews.properties";
+
 	private ScriptTemplateView view;
 
 	private ScriptTemplateConfigurer configurer;
@@ -254,6 +258,69 @@ public class ScriptTemplateViewTests {
 		assertThat(response.getContentAsString()).isEqualTo("foo");
 	}
 
+	@Test  // CVE-2026-22737
+	public void getResourceRejectsRelativeTraversal() {
+		initViewWithResourceLoaderPath(CLASSPATH_SCRIPT_LOCATION);
+
+		// Sanity check: the traversal target does exist, one level above the configured location.
+		assertThat(this.wac.getResource(OUTSIDE_LOCATION).exists()).isTrue();
+		// A template inside the configured location is still resolved.
+		assertThat(this.view.getResource("empty.txt")).isNotNull();
+
+		assertThat(this.view.getResource("../testviews.properties")).isNull();
+		assertThat(this.view.getResource("nashorn/../../testviews.properties")).isNull();
+		assertThat(this.view.getResource("/../testviews.properties")).isNull();
+		assertThat(this.view.getResource("  /  /../testviews.properties")).isNull();
+	}
+
+	@Test  // CVE-2026-22737
+	public void getResourceRejectsBackslashTraversal() {
+		initViewWithResourceLoaderPath(CLASSPATH_SCRIPT_LOCATION);
+
+		assertThat(this.view.getResource("..\\testviews.properties")).isNull();
+	}
+
+	@Test  // CVE-2026-22737
+	public void getResourceRejectsRelativeTraversalWithFileLocation() {
+		initViewWithResourceLoaderPath(scriptDirectoryUrl());
+
+		// A template inside the configured location is still resolved.
+		assertThat(this.view.getResource("empty.txt")).isNotNull();
+
+		assertThat(this.view.getResource("../testviews.properties")).isNull();
+	}
+
+	@Test  // CVE-2026-22737
+	public void getResourceRejectsEncodedTraversalWithFileLocation() {
+		initViewWithResourceLoaderPath(scriptDirectoryUrl());
+
+		assertThat(this.view.getResource("%2e%2e/testviews.properties")).isNull();
+		assertThat(this.view.getResource("%252e%252e/testviews.properties")).isNull();
+	}
+
+	@Test  // CVE-2026-22737
+	public void getResourceRejectsUrlAndPrefixedLocations() throws Exception {
+		initViewWithResourceLoaderPath(CLASSPATH_SCRIPT_LOCATION);
+
+		// Absolute / URL-prefixed locations that escape the configured location are
+		// blocked by the under-location containment check, even though they are not
+		// rejected outright as input paths.
+		assertThat(this.view.getResource(OUTSIDE_LOCATION)).isNull();
+		assertThat(this.view.getResource(this.wac.getResource(OUTSIDE_LOCATION).getURL().toString())).isNull();
+		assertThat(this.view.getResource("file:/etc/passwd")).isNull();
+		assertThat(this.view.getResource("url:file:/etc/passwd")).isNull();
+	}
+
+	@Test  // CVE-2026-22737
+	public void getResourceRejectsEmptyAndProtectedLocations() {
+		initViewWithResourceLoaderPath(CLASSPATH_SCRIPT_LOCATION);
+
+		assertThat(this.view.getResource("")).isNull();
+		assertThat(this.view.getResource("   ")).isNull();
+		assertThat(this.view.getResource("../../../../../WEB-INF/web.xml")).isNull();
+		assertThat(this.view.getResource("../../../../../META-INF/MANIFEST.MF")).isNull();
+	}
+
 	@Test // SPR-13379
 	public void contentType() throws Exception {
 		MockServletContext servletContext = new MockServletContext();
@@ -321,6 +388,22 @@ public class ScriptTemplateViewTests {
 		assertThat(accessor.getPropertyValue("renderObject")).isEqualTo("Template");
 		assertThat(accessor.getPropertyValue("renderFunction")).isEqualTo("render");
 		assertThat(accessor.getPropertyValue("sharedEngine")).asInstanceOf(BOOLEAN).isFalse();
+	}
+
+	private void initViewWithResourceLoaderPath(String resourceLoaderPath) {
+		this.wac.setServletContext(new MockServletContext());
+		this.wac.refresh();
+		this.view.setEngine(mock(InvocableScriptEngine.class));
+		this.view.setRenderFunction("render");
+		this.view.setResourceLoaderPath(resourceLoaderPath);
+		this.view.setApplicationContext(this.wac);
+	}
+
+	private String scriptDirectoryUrl() {
+		// Derived from a known resource so that the "file:" URL points at the test resources
+		// output directory rather than at the (same-named) test classes directory.
+		String url = getClass().getResource("/org/springframework/web/servlet/view/script/empty.txt").toString();
+		return url.substring(0, url.lastIndexOf('/') + 1);
 	}
 
 	private interface InvocableScriptEngine extends ScriptEngine, Invocable {

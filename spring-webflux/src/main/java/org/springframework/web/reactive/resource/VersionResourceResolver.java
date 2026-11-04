@@ -36,6 +36,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.lang.Nullable;
 import org.springframework.util.AntPathMatcher;
+import org.springframework.util.ResourceUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ServerWebExchange;
 
@@ -178,6 +179,12 @@ public class VersionResourceResolver extends AbstractResourceResolver {
 		}
 
 		String simplePath = versionStrategy.removeVersion(requestPath, candidate);
+		if (shouldIgnoreInputPath(simplePath)) {
+			if (logger.isTraceEnabled()) {
+				logger.trace("Ignoring invalid path after version removal for \"" + requestPath + "\"");
+			}
+			return Mono.empty();
+		}
 		return chain.resolveResource(exchange, simplePath, locations)
 				.filterWhen(resource -> versionStrategy.getResourceVersion(resource)
 						.map(actual -> {
@@ -234,6 +241,34 @@ public class VersionResourceResolver extends AbstractResourceResolver {
 			return this.versionStrategyMap.get(matchingPatterns.get(0));
 		}
 		return null;
+	}
+
+	/**
+	 * Whether the given path, obtained by removing the version from a request
+	 * path, must not be passed on to the rest of the resolver chain.
+	 * <p>The version substring is removed from a path that has already cleared
+	 * {@link ResourceWebHandler#isInvalidPath}, so the removal itself is the only
+	 * step that can turn an accepted path into an escaping one. Rejects an empty
+	 * result along with the same constructs {@code ResourceWebHandler} rejects
+	 * up front, and also checks the decoded forms of the path via
+	 * {@link ResourceHandlerUtils#shouldIgnoreInputPath}.
+	 */
+	private static boolean shouldIgnoreInputPath(String path) {
+		if (!StringUtils.hasText(path)) {
+			return true;
+		}
+		if (path.contains("WEB-INF") || path.contains("META-INF")) {
+			return true;
+		}
+		if (path.contains(":/")) {
+			String relativePath = (path.charAt(0) == '/' ? path.substring(1) : path);
+			if (ResourceUtils.isUrl(relativePath) || relativePath.startsWith("url:")) {
+				return true;
+			}
+		}
+		return (path.contains("../") ||
+				(path.contains("..") && StringUtils.cleanPath(path).contains("../")) ||
+				ResourceHandlerUtils.shouldIgnoreInputPath(path));
 	}
 
 
